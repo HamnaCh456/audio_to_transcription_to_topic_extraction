@@ -17,8 +17,8 @@ is_listening = False  # Flag to control listening
 def process_with_groq(transcript):
     global full_results
     client = Groq(
-        api_key="NA(Your groq api key)"
-        # api_key=os.getenv("GROQ_API_KEY")
+        #api_key="NA(Your groq api key)"
+        api_key=os.getenv("GROQ_API_KEY")
     )
 
     chat_completion = client.chat.completions.create(
@@ -33,8 +33,8 @@ def process_with_groq(transcript):
     full_results += chat_completion.choices[0].message.content
     st.write("Processed Results:", chat_completion.choices[0].message.content)
 
-api_key = "NA(Your deepgram api key )"
-# api_key = os.getenv("DEEPGRAM_API_KEY")
+#api_key = "NA(Your deepgram api key )"
+api_key = os.getenv("DEEPGRAM_API_KEY")
 headers = {
     "Authorization": f"Token {api_key}",
 }
