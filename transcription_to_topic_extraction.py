@@ -1,5 +1,4 @@
-import gtts
-from playsound import playsound
+
 from dotenv import load_dotenv
 import os
 import asyncio
