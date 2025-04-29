@@ -4,4 +4,6 @@ pyaudio==0.2.14
 aiohttp==3.11.18
 numpy==2.2.5
 groq==0.23.1
-
+streamlit-webrtc  
+websocket-client  
+av 
