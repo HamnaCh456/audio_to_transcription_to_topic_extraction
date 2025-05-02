@@ -1,134 +1,140 @@
-import streamlit as st  
-from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration  
-import queue  
-import threading  
-import websocket  
-import json  
-import numpy as np  
-import time  
-from dotenv import load_dotenv  
-import os  
-from groq import Groq  
-  
-load_dotenv()  
-  
-# Global variables  
-audio_queue = queue.Queue()  
-all_transcripts = []  
-full_results = ""  
-  
-# Placeholders for dynamic content  
-transcript_placeholder = st.empty()  
-processed_placeholder = st.empty()  
-  
-# Deepgram API setup  
-api_key = os.getenv("DEEPGRAM_API_KEY")  
-headers = {  
-    "Authorization": f"Token {api_key}",  
-}  
-deepgram_ws_url = "wss://api.deepgram.com/v1/listen"  
-  
-# Groq processing function  
-def process_with_groq(transcript):  
-    global full_results  
-    client = Groq(  
-        api_key=os.getenv("GROQ_API_KEY")  
-    )  
-  
-    chat_completion = client.chat.completions.create(  
-        messages=[  
-            {  
-                "role": "user",  
-                "content": f"Extract key topics and create a hierarchical topic tree from it: {transcript}"  
-            }  
-        ],  
-        model="llama-3.3-70b-versatile",  
-    )  
-    result = chat_completion.choices[0].message.content  
-    full_results += result  
-    processed_placeholder.write(f"Processed Results: {result}")  
-  
-# WebSocket callbacks  
-def on_message(ws, message):  
-    try:  
-        response = json.loads(message)  
-        if response.get("type") == "Results":  
-            transcript = response["channel"]["alternatives"][0].get("transcript", "")  
-            if transcript:  
-                all_transcripts.append(transcript)  
-                transcript_placeholder.write(f"Live Transcript: {transcript}")  
-                process_with_groq(transcript)  
-    except Exception as e:  
-        print(f"Error processing message: {e}")  
-  
-def on_error(ws, error):  
-    print(f"WebSocket error: {error}")  
-  
-def on_close(ws, close_status_code, close_msg):  
-    print(f"WebSocket closed: {close_msg}")  
-  
-def on_open(ws):  
-    print("WebSocket connection established")  
-  
-# Audio processing thread  
-def process_audio_queue():  
-    # Create WebSocket connection  
-    ws = websocket.WebSocketApp(  
-        f"{deepgram_ws_url}?encoding=linear16&sample_rate=16000",  
-        header=headers,  
-        on_message=on_message,  
-        on_error=on_error,  
-        on_close=on_close,  
-        on_open=on_open  
-    )  
-      
-    # Start WebSocket in a separate thread  
-    ws_thread = threading.Thread(target=ws.run_forever)  
-    ws_thread.daemon = True  
-    ws_thread.start()  
-      
-    # Process audio chunks  
-    while True:  
-        if not audio_queue.empty():  
-            audio_chunk = audio_queue.get()  
-            if ws.sock and ws.sock.connected:  
-                ws.send(audio_chunk, websocket.ABNF.OPCODE_BINARY)  
-        else:  
-            time.sleep(0.01)  
-  
-# WebRTC audio callback  
-def audio_frame_callback(frame):  
-    sound = frame.to_ndarray()  
-    sound = sound.astype(np.int16)  
-    audio_queue.put(sound.tobytes())  
-    return frame  
-  
-# Main Streamlit app  
-def main():  
-    st.title("Real-Time Speech-to-Topic Tree Extractor")  
-      
-    # Start audio processing thread  
-    if "processing_thread_started" not in st.session_state:  
-        processing_thread = threading.Thread(target=process_audio_queue, daemon=True)  
-        processing_thread.start()  
-        st.session_state.processing_thread_started = True  
-      
-    # WebRTC streamer  
-    webrtc_ctx = webrtc_streamer(  
-        key="speech-to-text",  
-        mode=WebRtcMode.SENDONLY,  
-        audio_frame_callback=audio_frame_callback,  
-        rtc_configuration=RTCConfiguration(  
-            {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}  
-        ),  
-        media_stream_constraints={"video": False, "audio": True},  
-    )  
-      
-    # Show results button  
-    if st.button("Show Results"):  
-        full_text = " ".join(all_transcripts)  
-        st.write("Final Full Transcript:", full_text)  
-        st.write("Full Processed Results:", full_results)  
-  
-if __name__ == "__main__":  
+import gtts
+from playsound import playsound
+from dotenv import load_dotenv
+import os
+import asyncio
+import aiohttp
+import json
+import pyaudio
+import numpy as np
+import streamlit as st
+from groq import Groq
+
+load_dotenv()
+full_results = ""
+is_listening = False  # Flag to control listening
+
+def process_with_groq(transcript):
+    global full_results
+    client = Groq(
+        api_key="NA"
+        # api_key=os.getenv("GROQ_API_KEY")
+    )
+
+    chat_completion = client.chat.completions.create(
+        messages=[
+            {
+                "role": "user",
+                "content": f"Extract key topics and create a hierarchical topic tree from it: {transcript}"
+            }
+        ],
+        model="llama-3.3-70b-versatile",
+    )
+    full_results += chat_completion.choices[0].message.content
+    st.write("Processed Results:", chat_completion.choices[0].message.content)
+
+api_key = "NA"
+# api_key = os.getenv("DEEPGRAM_API_KEY")
+headers = {
+    "Authorization": f"Token {api_key}",
+}
+
+deepgram_ws_url = "wss://api.deepgram.com/v1/listen"
+
+FORMAT = pyaudio.paInt16
+CHANNELS = 1
+RATE = 16000
+CHUNK = 4096
+all_transcripts = []
+current_transcript = ""
+
+async def stream_microphone_to_websocket():
+    global is_listening
+
+    p = pyaudio.PyAudio()
+    stream = p.open(format=FORMAT,
+                    channels=CHANNELS,
+                    rate=RATE,
+                    input=True,
+                    frames_per_buffer=CHUNK)
+
+    st.write("Microphone stream opened. Listening... Press 'Stop' button to end.")
+
+    async with aiohttp.ClientSession() as session:
+        async with session.ws_connect(
+            f"{deepgram_ws_url}?encoding=linear16&sample_rate={RATE}",
+            headers=headers
+        ) as ws:
+            print("WebSocket connection established.")
+
+            async def send_microphone_data():
+                try:
+                    while is_listening:
+                        data = stream.read(CHUNK, exception_on_overflow=False)
+                        await ws.send_bytes(data)
+                        await asyncio.sleep(0.01)
+                except Exception as e:
+                    print(f"Error sending microphone data: {e}")
+                finally:
+                    stream.stop_stream()
+                    stream.close()
+                    p.terminate()
+                    print("Microphone stream closed.")
+
+            async def receive_transcripts():
+                try:
+                    async for message in ws:
+                        if not is_listening:
+                            break
+                        try:
+                            response = json.loads(message.data)
+                            if response.get("type") == "Results":
+                                transcript = response["channel"]["alternatives"][0].get("transcript", "")
+                                if transcript:
+                                    all_transcripts.append(transcript)
+                                    st.write("Live Transcript:", transcript)
+                                    process_with_groq(transcript)
+                                    st.write("Transcript:", transcript)
+                        except json.JSONDecodeError as e:
+                            print(f"Error decoding JSON message: {e}")
+                        except KeyError as e:
+                            print(f"Key error: {e}")
+                except Exception as e:
+                    print(f"WebSocket error: {e}")
+
+            try:
+                await asyncio.gather(send_microphone_data(), receive_transcripts())
+            finally:
+                await close_websocket(ws)
+
+async def close_websocket(ws):
+    close_msg = '{"type": "CloseStream"}'
+    await ws.send_str(close_msg)
+    await ws.close()
+
+def main():
+    global is_listening
+    st.title("Real-Time Speech-to-Topic Tree Extractor")
+
+    if "run" not in st.session_state:
+        st.session_state.run = False
+
+    if st.button("Start Listening"):
+        st.session_state.run = True
+        is_listening = True
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(stream_microphone_to_websocket())
+
+    if st.button("Stop Listening"):
+        st.session_state.run = False
+        is_listening = False
+        full_text = " ".join(all_transcripts)
+        st.write("Final Full Transcript:", full_text)
+        st.write("Full Processed Results:", full_results)
+        print(full_text)
+        print(full_results)
+        print("Process interrupted. Closing connections.")
+
+if __name__ == "__main__":
     main()
